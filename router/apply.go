@@ -1,6 +1,7 @@
 package router
 
 import (
+	"log"
 	"net/http"
 	"os"
 
@@ -13,21 +14,33 @@ import (
 func Apply() http.Handler {
 	r := mux.NewRouter()
 
-	// API 路由
-	api := r.PathPrefix("/api").Subrouter()
-	ModemRegister(api)
-	SmsdbRegister(api)
-	WebhookRegister(api)
-	SettingRegister(api)
-
-	// WebSocket
-	WebSocketRegister(r)
+	if target := os.Getenv("API_PROXY_TARGET"); target != "" {
+		if err := ProxyRegister(r, target); err != nil {
+			log.Printf("API proxy disabled: %v", err)
+			LocalAPIRegister(r)
+		}
+	} else {
+		LocalAPIRegister(r)
+	}
 
 	// 静态文件服务
 	StaticServer(r)
 
 	// 应用 Basic Auth 中间件
 	return BasicAuthMiddleware(r)
+}
+
+func LocalAPIRegister(r *mux.Router) {
+	api := r.PathPrefix("/api").Subrouter()
+	ModemRegister(api)
+	SmsdbRegister(api)
+	WebhookRegister(api)
+	AlertRegister(api)
+	SettingRegister(api)
+	UpdateRegister(api)
+
+	// SSE
+	SseRegister(r)
 }
 
 func ModemRegister(r *mux.Router) {
@@ -65,7 +78,17 @@ func WebhookRegister(r *mux.Router) {
 	r.HandleFunc("/webhook/get", wh.GetWebhook).Methods("GET")
 	r.HandleFunc("/webhook/update", wh.UpdateWebhook).Methods("PUT")
 	r.HandleFunc("/webhook/delete", wh.DeleteWebhook).Methods("DELETE")
+	r.HandleFunc("/webhook/preview", wh.PreviewWebhook).Methods("POST")
+	r.HandleFunc("/webhook/deliveries", wh.ListWebhookDeliveries).Methods("GET")
 	r.HandleFunc("/webhook/test", wh.TestWebhook).Methods("POST")
+}
+
+func AlertRegister(r *mux.Router) {
+	ah := handler.NewAlertHandler()
+
+	r.HandleFunc("/alerts/list", ah.ListAlerts).Methods("GET")
+	r.HandleFunc("/alerts/scan", ah.ScanAlerts).Methods("POST")
+	r.HandleFunc("/alerts/resolve", ah.ResolveAlerts).Methods("POST")
 }
 
 func SettingRegister(r *mux.Router) {
@@ -77,10 +100,18 @@ func SettingRegister(r *mux.Router) {
 	r.HandleFunc("/settings/webhook", sh.UpdateWebhookSettings).Methods("PUT")
 }
 
-func WebSocketRegister(r *mux.Router) {
-	ws := handler.NewWebSocketHandler()
+func UpdateRegister(r *mux.Router) {
+	uh := handler.NewUpdateHandler()
 
-	r.HandleFunc("/ws/modem", ws.HandleWebSocket)
+	r.HandleFunc("/update/check", uh.CheckUpdate).Methods("GET")
+	r.HandleFunc("/update/apply", uh.ApplyUpdate).Methods("POST")
+	r.HandleFunc("/update/restart", uh.Restart).Methods("POST")
+}
+
+func SseRegister(r *mux.Router) {
+	sse := handler.NewSseHandler()
+
+	r.HandleFunc("/events/modem", sse.HandleModemEvents).Methods("GET")
 }
 
 func StaticServer(r *mux.Router) {

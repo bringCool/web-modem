@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"time"
 
 	"github.com/rehiy/modem/at"
@@ -9,16 +10,129 @@ import (
 )
 
 // atSmsToModelSms 将AT短信转换为数据库模型
-func atSmsToModelSms(atSms at.Sms, receiveNumber string, modemName string) *models.Sms {
-	return &models.Sms{
+func atSmsToModelSms(atSms at.Sms, conn *ModemConn) *models.Sms {
+	sms := &models.Sms{
 		Content:       atSms.Text,
 		SmsIDs:        database.IntArrayToString(atSms.Indices),
 		ReceiveTime:   parseSmsTime(atSms.Time),
-		ReceiveNumber: receiveNumber,
+		ReceiveNumber: connValue(conn, func(c *ModemConn) string { return c.Number }),
 		SendNumber:    atSms.Number,
 		Direction:     "in",
-		ModemName:     modemName,
+		ModemName:     connValue(conn, func(c *ModemConn) string { return c.Name }),
+		DeviceIMEI:    connValue(conn, func(c *ModemConn) string { return c.IMEI }),
 	}
+	EnrichSmsCardInfo(sms, conn)
+	return sms
+}
+
+func connValue(conn *ModemConn, getter func(*ModemConn) string) string {
+	if conn == nil {
+		return ""
+	}
+	return getter(conn)
+}
+
+// EnrichSmsCardInfo 为短信补充 SIM 和运营商信息，供查询与 Webhook 条件使用。
+func EnrichSmsCardInfo(sms *models.Sms, conn *ModemConn) {
+	if sms == nil || conn == nil {
+		return
+	}
+
+	if sms.DeviceIMEI == "" {
+		sms.DeviceIMEI = strings.TrimSpace(conn.IMEI)
+	}
+	if sms.ModemName == "" {
+		sms.ModemName = strings.TrimSpace(conn.Name)
+	}
+	if sms.ReceiveNumber == "" && sms.Direction == "in" {
+		sms.ReceiveNumber = strings.TrimSpace(conn.Number)
+	}
+	if sms.SendNumber == "" && sms.Direction == "out" {
+		sms.SendNumber = strings.TrimSpace(conn.Number)
+	}
+
+	if sms.SimICCID == "" {
+		sms.SimICCID = strings.TrimSpace(conn.ICCID)
+	}
+	if sms.SimICCID == "" {
+		if iccid := readConnICCID(conn); iccid != "" {
+			conn.ICCID = iccid
+			sms.SimICCID = conn.ICCID
+		}
+	}
+
+	if sms.SimIMSI == "" {
+		sms.SimIMSI = strings.TrimSpace(conn.IMSI)
+	}
+	if sms.SimIMSI == "" {
+		if imsi, err := conn.GetIMSI(); err == nil {
+			conn.IMSI = strings.TrimSpace(imsi)
+			sms.SimIMSI = conn.IMSI
+		}
+	}
+
+	if sms.Operator == "" {
+		sms.Operator = strings.TrimSpace(conn.Operator)
+	}
+	if sms.Operator == "" {
+		if _, _, operator, _, err := conn.GetOperator(); err == nil {
+			conn.Operator = strings.TrimSpace(operator)
+			sms.Operator = conn.Operator
+		}
+	}
+}
+
+func readConnICCID(conn *ModemConn) string {
+	if iccid, err := conn.GetICCID(); err == nil {
+		if normalized := normalizeCardIdentifier(iccid); normalized != "" {
+			return normalized
+		}
+	}
+
+	for _, command := range []string{"AT+QCCID", "AT+ICCID?", "AT+CCID?"} {
+		responses, err := conn.SendCommand(command)
+		if err != nil {
+			continue
+		}
+		if iccid := parseICCIDResponses(responses); iccid != "" {
+			return iccid
+		}
+	}
+	return ""
+}
+
+func parseICCIDResponses(responses []string) string {
+	for _, response := range responses {
+		line := strings.TrimSpace(response)
+		if line == "" || strings.EqualFold(line, "OK") {
+			continue
+		}
+		if strings.Contains(line, ":") {
+			parts := strings.SplitN(line, ":", 2)
+			line = parts[1]
+		}
+		for _, part := range strings.FieldsFunc(line, func(r rune) bool {
+			return r == ',' || r == ' ' || r == '\t' || r == '\r' || r == '\n'
+		}) {
+			if normalized := normalizeCardIdentifier(part); normalized != "" {
+				return normalized
+			}
+		}
+	}
+	return ""
+}
+
+func normalizeCardIdentifier(value string) string {
+	value = strings.Trim(strings.TrimSpace(value), `"`)
+	if len(value) < 10 {
+		return ""
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return value
 }
 
 // parseSmsTime 解析短信时间字符串

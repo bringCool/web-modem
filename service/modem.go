@@ -7,13 +7,14 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/rehiy/modem/at"
-	"github.com/tarm/serial"
+	"go.bug.st/serial"
 )
 
 var (
@@ -26,8 +27,23 @@ var (
 type ModemConn struct {
 	Name       string `json:"name"`
 	Number     string `json:"number"`
+	IMEI       string `json:"imei"`
+	ICCID      string `json:"iccid"`
+	IMSI       string `json:"imsi"`
+	Operator   string `json:"operator"`
 	Connected  bool   `json:"connected"`
 	*at.Device `json:"-"`
+}
+
+type serialPort struct {
+	serial.Port
+}
+
+func (p *serialPort) Flush() error {
+	if err := p.ResetInputBuffer(); err != nil {
+		return err
+	}
+	return p.ResetOutputBuffer()
 }
 
 // ModemService 管理多个串口连接
@@ -65,6 +81,25 @@ func (m *ModemService) ScanModems(devs ...string) {
 		if len(devs) == 0 {
 			devs = []string{"COM1", "COM2", "COM3", "COM4", "COM5"}
 		}
+	case "darwin":
+		if len(devs) == 0 {
+			devs = []string{
+				"/dev/cu.usbmodem*",
+				"/dev/cu.usbserial*",
+				"/dev/cu.wchusbserial*",
+				"/dev/cu.SLAB_USBtoUART*",
+				"/dev/tty.usbmodem*",
+				"/dev/tty.usbserial*",
+				"/dev/tty.wchusbserial*",
+				"/dev/tty.SLAB_USBtoUART*",
+			}
+		}
+		pps := []string{}
+		for _, p := range devs {
+			matches, _ := filepath.Glob(p)
+			pps = append(pps, matches...)
+		}
+		devs = pps
 	default:
 		if len(devs) == 0 {
 			devs = []string{"/dev/ttyUSB*", "/dev/ttyACM*"}
@@ -88,11 +123,27 @@ func (m *ModemService) GetConnList() []*ModemConn {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	var conns []*ModemConn
+	conns := make([]*ModemConn, 0, len(m.pool))
 	for _, model := range m.pool {
 		conns = append(conns, model)
 	}
 	return conns
+}
+
+// GetConnectedNames 返回当前可用连接名称列表
+func (m *ModemService) GetConnectedNames() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	names := []string{}
+	for _, conn := range m.pool {
+		if conn == nil || !conn.Connected || conn.Device == nil || !conn.Device.IsOpen() {
+			continue
+		}
+		names = append(names, conn.Name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // GetConn 返回给定端口名称的 AT 接口
@@ -140,7 +191,7 @@ func (m *ModemService) handleIncomingSms(portName string, smsIndex int) {
 		}
 		if hasNewSms {
 			log.Printf("[%s] New Sms from %s: %s", portName, atSms.Number, atSms.Text)
-			modelSms := atSmsToModelSms(atSms, conn.Number, conn.Name)
+			modelSms := atSmsToModelSms(atSms, conn)
 			smsdbService.HandleIncomingSms(modelSms)
 			webhookService.HandleIncomingSms(modelSms)
 			// 自动删除设备上的短信
@@ -193,18 +244,24 @@ func (m *ModemService) makeConnect(u string) error {
 
 	// 打开串口
 	pf("connecting")
-	port, err := serial.OpenPort(&serial.Config{
-		Name:        u,      // 串口完整路径
-		Baud:        115200, // 波特率
-		ReadTimeout: 1 * time.Second,
+	port, err := serial.Open(u, &serial.Mode{
+		BaudRate: 115200,
+		DataBits: 8,
+		Parity:   serial.NoParity,
+		StopBits: serial.OneStopBit,
 	})
 	if err != nil {
 		pf("connect failed: %v", err)
 		return err
 	}
+	if err := port.SetReadTimeout(1 * time.Second); err != nil {
+		port.Close()
+		pf("set read timeout failed: %v", err)
+		return err
+	}
 
 	// 链接新设备
-	modem := at.New(port, hf, &at.Config{Printf: pf})
+	modem := at.New(&serialPort{Port: port}, hf, &at.Config{Printf: pf})
 	if err := modem.Test(); err != nil {
 		pf("at test failed: %v", err)
 		modem.Close()
@@ -219,9 +276,15 @@ func (m *ModemService) makeConnect(u string) error {
 	// 添加到连接池
 	m.pool[n] = &ModemConn{
 		Name:      n,
-		Number:    "unkown",
+		Number:    "unknown",
 		Connected: true,
 		Device:    modem,
+	}
+
+	if imei, err := modem.GetIMEI(); err == nil {
+		m.pool[n].IMEI = imei
+	} else {
+		pf("connected, but failed to get IMEI: %v", err)
 	}
 
 	// 获取手机号，用于接收号码
