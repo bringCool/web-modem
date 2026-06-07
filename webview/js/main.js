@@ -9,11 +9,13 @@ import { UIrender } from './utils/dom.js';
 import { ModemManager } from './modules/modem.js';
 import { SmsdbManager } from './modules/smsdb.js';
 import { WebhookManager } from './modules/webhook.js';
+import { AlertManager } from './modules/alert.js';
 import { SettingManager } from './modules/setting.js';
+import { UpdateManager } from './modules/update.js';
 
 import { TabManager } from './modules/tabs.js';
 
-import { WebSocketService } from './modules/websocket.js';
+import { SseService } from './modules/sse.js';
 
 // 全局应用对象
 window.app = {};
@@ -34,13 +36,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         app.modemManager = new ModemManager();
         app.smsdbManager = new SmsdbManager();
         app.webhookManager = new WebhookManager();
+        app.alertManager = new AlertManager();
         app.settingManager = new SettingManager();
+        app.updateManager = new UpdateManager();
 
         // 初始化标签管理器
         app.tabManager = new TabManager();
+        await app.modemManager.ready;
+        app.tabManager.loadTabData();
 
-        // 初始化 WebSocket 服务
-        app.webSocket = new WebSocketService();
+        // 初始化 SSE 服务
+        app.sse = new SseService();
 
         // 记录应用启动日志
         app.logger.success('Modem 调测系统已启动');

@@ -32,6 +32,11 @@ export class SmsdbManager {
                 offset: this.page * this.pageSize
             };
 
+            const deviceKey = $('#smsdbFilterDeviceKey')?.value.trim();
+            if (deviceKey) {
+                filter.device_key = deviceKey;
+            }
+
             // 添加过滤条件
             const sendNumber = $('#smsdbFilterSendNumber')?.value.trim();
             if (sendNumber) {
@@ -55,17 +60,11 @@ export class SmsdbManager {
                 filter.end_time = end.toISOString();
             }
 
-            // 使用 header 中的当前 modem 进行过滤
-            const modemName = $('#modemSelect')?.value;
-            if (modemName) {
-                filter.modem_name = modemName;
-            }
-
             const queryString = buildQueryString(filter);
             const result = await apiRequest(`/smsdb/list?${queryString}`);
 
-            this.total = result.total;
-            this.displaySmsList(result.data);
+            this.total = Number(result?.total) || 0;
+            this.displaySmsList(Array.isArray(result?.data) ? result.data : []);
             this.updateSmsdbPagination();
         } catch (error) {
             app.logger.error('加载短信存储失败: ' + error);
@@ -82,19 +81,87 @@ export class SmsdbManager {
         if (!tbody) return;
 
         if (!smsList || smsList.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="7" class="empty-table-cell">暂无短信</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" class="empty-table-cell">暂无短信</td></tr>';
             return;
         }
 
         tbody.innerHTML = smsList.map(sms => app.render.render('smsdbItem', {
             id: sms.id,
-            direction: sms.direction === 'in' ? '📥 接收' : '📤 发送',
+            direction: sms.direction === 'in' ? '接收' : '发送',
             send_number: sms.send_number || '-',
             receive_number: sms.receive_number || '-',
+            device: this.getSmsDeviceLabel(sms),
             content: sms.content,
             receive_time: new Date(sms.receive_time).toLocaleString(),
             sms_ids: sms.sms_ids
         })).join('');
+    }
+
+    getSmsDeviceLabel(sms) {
+        const number = sms.direction === 'out' ? sms.send_number : sms.receive_number;
+        const value = [sms.device_imei, number, sms.modem_name].find(item => {
+            const text = String(item || '').trim();
+            return text && text !== '-' && text.toLowerCase() !== 'unknown';
+        });
+        if (value) return value;
+        return '-';
+    }
+
+    async listRecentSmsdb(limit = 6) {
+        const container = $('#recentSmsList');
+        if (!container) return;
+
+        const deviceKeys = app.modemManager?.getSmsIdentityKeys?.() || [];
+        if (deviceKeys.length === 0) {
+            container.innerHTML = '<div class="empty-state">请选择串口设备</div>';
+            return;
+        }
+
+        container.innerHTML = this.recentSmsSkeleton(limit);
+        try {
+            const queryString = buildQueryString({ limit, offset: 0, device_key: deviceKeys });
+            const result = await apiRequest(`/smsdb/list?${queryString}`);
+            const smsList = Array.isArray(result?.data) ? result.data : [];
+
+            if (smsList.length === 0) {
+                container.innerHTML = '<div class="empty-state">暂无短信记录</div>';
+                return;
+            }
+
+            container.innerHTML = smsList.map(sms => `
+                <div class="recent-sms-item">
+                    <div class="recent-sms-meta">
+                        <span>${sms.direction === 'in' ? '接收' : '发送'}</span>
+                        <span>${this.escapeHtml(sms.send_number || '-')}</span>
+                        <span>${this.escapeHtml(sms.receive_number || sms.device_imei || sms.modem_name || '-')}</span>
+                        <time>${new Date(sms.receive_time).toLocaleString()}</time>
+                    </div>
+                    <div class="recent-sms-content">${this.escapeHtml(sms.content || '')}</div>
+                </div>
+            `).join('');
+        } catch (error) {
+            container.innerHTML = '<div class="empty-state">短信记录加载失败</div>';
+            app.logger.error('加载最近短信失败: ' + error);
+        }
+    }
+
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    recentSmsSkeleton(count) {
+        return Array.from({ length: Math.min(count, 4) }, () => `
+            <div class="recent-sms-item recent-sms-skeleton">
+                <div class="recent-sms-meta">
+                    <span class="skeleton-line skeleton-chip"></span>
+                    <span class="skeleton-line skeleton-meta"></span>
+                    <span class="skeleton-line skeleton-meta"></span>
+                </div>
+                <div class="skeleton-line skeleton-message"></div>
+            </div>
+        `).join('');
     }
 
     toggleSmsdbSelection(id) {
@@ -112,7 +179,12 @@ export class SmsdbManager {
         const checkboxes = $$('#smsdbList input[type="checkbox"]');
         checkboxes.forEach(checkbox => {
             checkbox.checked = checkAll.checked;
-            this.toggleSmsdbSelection(parseInt(checkbox.value));
+            const id = parseInt(checkbox.value);
+            if (checkAll.checked) {
+                this.selectedSmsdb.add(id);
+            } else {
+                this.selectedSmsdb.delete(id);
+            }
         });
     }
 
@@ -218,15 +290,47 @@ export class SmsdbManager {
        ========================================= */
 
     /**
-     * 同步当前选中的Modem短信到数据库
+     * 同步所有已连接Modem短信到数据库
+     */
+    async syncAllModemSms() {
+        try {
+            app.logger.info('正在同步所有已连接卡的短信...');
+            const result = await apiRequest('/smsdb/sync', 'POST', {});
+            const results = Array.isArray(result?.results) ? result.results : [];
+
+            if (results.length === 0) {
+                app.logger.info('没有可同步的已连接卡');
+                return;
+            }
+
+            results.forEach(item => this.logSyncResult(item));
+
+            const newCount = Number(result?.newCount) || 0;
+            const totalCount = Number(result?.totalCount) || 0;
+            const failedCount = Number(result?.failedCount) || 0;
+
+            if (failedCount > 0) {
+                app.logger.error(`短信同步完成，${failedCount} 个卡失败`);
+            } else if (newCount > 0) {
+                app.logger.success(`全部卡同步完成，新增 ${newCount} 条短信 (共 ${totalCount} 条)`);
+            } else {
+                app.logger.info(`全部卡无新短信 (共 ${totalCount} 条)`);
+            }
+
+            if (newCount > 0) {
+                await this.listSmsdb();
+                await this.listRecentSmsdb();
+            }
+        } catch (error) {
+            app.logger.error('同步全部短信失败: ' + error);
+        }
+    }
+
+    /**
+     * 兼容旧入口：短信记录是全局模块，默认同步所有卡。
      */
     async syncCurrentModemSms() {
-        const modemName = $('#modemSelect').value;
-        if (!modemName) {
-            app.logger.error('请先选择串口');
-            return;
-        }
-        await this.syncModemSms(modemName);
+        await this.syncAllModemSms();
     }
 
     /**
@@ -238,16 +342,27 @@ export class SmsdbManager {
             app.logger.info(`正在同步 ${modemName} 的短信...`);
             const result = await apiRequest('/smsdb/sync', 'POST', { name: modemName });
 
-            if (result.error) {
-                app.logger.error(`[${result.modemName}] ${result.error}`);
-            } else if (result.newCount > 0) {
-                app.logger.success(`[${result.modemName}] 同步 ${result.newCount} 条新短信 (共 ${result.totalCount} 条)`);
+            this.logSyncResult(result);
+            if ((Number(result?.newCount) || 0) > 0) {
                 await this.listSmsdb();
-            } else {
-                app.logger.info(`[${result.modemName}] 无新短信 (共 ${result.totalCount} 条)`);
+                await this.listRecentSmsdb();
             }
         } catch (error) {
             app.logger.error(`同步 ${modemName} 短信失败: ` + error);
+        }
+    }
+
+    logSyncResult(result) {
+        const modemName = result?.modemName || '未知卡';
+        const newCount = Number(result?.newCount) || 0;
+        const totalCount = Number(result?.totalCount) || 0;
+
+        if (result?.error) {
+            app.logger.error(`[${modemName}] ${result.error}`);
+        } else if (newCount > 0) {
+            app.logger.success(`[${modemName}] 同步 ${newCount} 条新短信 (共 ${totalCount} 条)`);
+        } else {
+            app.logger.info(`[${modemName}] 无新短信 (共 ${totalCount} 条)`);
         }
     }
 }

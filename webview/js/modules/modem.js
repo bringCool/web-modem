@@ -13,7 +13,15 @@ export class ModemManager {
      */
     constructor() {
         this.name = null;
-        this.refreshModems();
+        this.currentInfo = null;
+        this.currentSignal = null;
+        this.currentSignalName = null;
+        this.signalRefreshTimer = null;
+        this.signalRefreshIntervalMs = 10000;
+        this.signalRefreshInFlight = false;
+        this.modemRefreshInFlight = false;
+        document.addEventListener('visibilitychange', () => this.syncSignalAutoRefresh());
+        this.ready = this.refreshModems();
         this.renderATCommandSelect();
     }
 
@@ -26,8 +34,13 @@ export class ModemManager {
      * 获取所有可用的Modem设备并更新选择框
      */
     async refreshModems() {
+        if (this.modemRefreshInFlight) return;
+
+        this.modemRefreshInFlight = true;
+        this.setRefreshModemsLoading(true);
         try {
-            const modems = await apiRequest('/modem/list');
+            const result = await apiRequest('/modem/list');
+            const modems = Array.isArray(result) ? result : [];
             const select = $('#modemSelect');
             const current = select.value;
             select.innerHTML = '<option value="">-- 选择串口 --</option>';
@@ -47,11 +60,45 @@ export class ModemManager {
             }
 
             this.name = $('#modemSelect').value;
-            await this.getModemInfo();
-            await this.getSignalStrength();
+            if (this.name) {
+                await this.getModemInfo();
+                await this.getSignalStrength();
+            } else {
+                this.renderNoModemSelected();
+            }
+            this.syncSignalAutoRefresh();
             app.logger.info('已刷新串口列表');
         } catch (error) {
             app.logger.error('刷新串口失败: ' + error);
+        } finally {
+            this.modemRefreshInFlight = false;
+            this.setRefreshModemsLoading(false);
+        }
+    }
+
+    setRefreshModemsLoading(isLoading) {
+        const button = $('#refreshModemsBtn');
+        if (!button) return;
+
+        button.disabled = isLoading;
+        button.classList.toggle('is-loading', isLoading);
+
+        const label = button.querySelector('.btn-label');
+        if (label) {
+            label.textContent = isLoading ? '刷新中' : '刷新设备';
+        }
+    }
+
+    renderNoModemSelected() {
+        this.currentInfo = null;
+        const modemInfo = $('#modemInfo');
+        const signalInfo = $('#signalInfo');
+
+        if (modemInfo) {
+            modemInfo.innerHTML = '<div class="empty-state info-placeholder">请选择或刷新串口设备</div>';
+        }
+        if (signalInfo) {
+            signalInfo.innerHTML = '<div class="empty-state info-placeholder">暂无信号数据</div>';
         }
     }
 
@@ -60,18 +107,58 @@ export class ModemManager {
      * 获取当前Modem的设备信息
      */
     async getModemInfo() {
+        if (!this.name) {
+            this.renderNoModemSelected();
+            return;
+        }
+
         const queryString = buildQueryString({ name: this.name });
         const info = await apiRequest(`/modem/info?${queryString}`);
+        this.currentInfo = info;
         // 渲染模板
         const container = $('#modemInfo');
         container.innerHTML = app.render.render('modemInfo', { info });
         // 使用运营商ID查询运营商信息，并替换当前的运营商名称
+        if (!info.operator || !/^\d+$/.test(String(info.operator).trim())) {
+            return;
+        }
         getPlmnInfo(info.operator).then(plmn => {
-            const replace = `${plmn.operator}(${info.operator})`
-            container.innerHTML = container.innerHTML.replace(info.operator, replace);
+            const el = container.querySelector('[data-field="operator"]');
+            if (el) el.textContent = `${plmn.operator}(${info.operator})`;
         }).catch(error => {
             app.logger.error('获取PLMN信息失败: ' + error);
         });
+    }
+
+    getSmsIdentityKeys() {
+        const keys = [];
+        const addKey = (value) => {
+            const key = this.normalizeDeviceIdentity(value);
+            if (key && !keys.includes(key)) {
+                keys.push(key);
+            }
+        };
+
+        if (this.currentInfo && this.currentInfo.name === this.name) {
+            addKey(this.currentInfo.number);
+            addKey(this.currentInfo.imei);
+            addKey(this.currentInfo.iccid);
+            addKey(this.currentInfo.imsi);
+        }
+        addKey(this.name);
+
+        return keys;
+    }
+
+    normalizeDeviceIdentity(value) {
+        if (value === undefined || value === null) return '';
+
+        const text = String(value).trim();
+        if (!text || text === '-' || text.toLowerCase() === 'unknown') {
+            return '';
+        }
+
+        return text;
     }
 
     /**
@@ -79,11 +166,101 @@ export class ModemManager {
      * 获取当前Modem的信号强度信息
      */
     async getSignalStrength() {
-        const queryString = buildQueryString({ name: this.name });
-        const signal = await apiRequest(`/modem/signal?${queryString}`);
-        // 渲染模板
+        if (!this.name || this.signalRefreshInFlight) return;
+
+        this.signalRefreshInFlight = true;
+        try {
+            const queryString = buildQueryString({ name: this.name });
+            const signal = await apiRequest(`/modem/signal?${queryString}`);
+            this.decorateSignalInfo(signal);
+            this.currentSignal = signal;
+            this.currentSignalName = this.name;
+            // 渲染模板
+            this.renderSignalInfo(signal);
+            this.updateSignalRefreshStatus(new Date());
+        } catch (error) {
+            app.logger.error('获取信号失败: ' + error);
+        } finally {
+            this.signalRefreshInFlight = false;
+        }
+    }
+
+    renderCachedMainInfo() {
+        if (this.currentSignal && this.currentSignalName === this.name) {
+            this.renderSignalInfo(this.currentSignal);
+        }
+    }
+
+    renderSignalInfo(signal) {
         const container = $('#signalInfo');
+        if (!container) return;
         container.innerHTML = app.render.render('signalInfo', { signal });
+    }
+
+    decorateSignalInfo(signal) {
+        const mcc = this.normalizeDeviceIdentity(signal.mcc);
+        const mnc = this.normalizeDeviceIdentity(signal.mnc);
+        signal.plmn = mcc && mnc ? `${mcc} / ${mnc}` : '';
+
+        const pci = this.normalizeDeviceIdentity(signal.pci);
+        const psc = this.normalizeDeviceIdentity(signal.psc);
+        signal.pci_label = pci || psc;
+
+        const earfcn = this.normalizeDeviceIdentity(signal.earfcn);
+        const arfcn = this.normalizeDeviceIdentity(signal.arfcn);
+        const uarfcn = this.normalizeDeviceIdentity(signal.uarfcn);
+        signal.channel_label = earfcn || arfcn || uarfcn;
+    }
+
+    setSignalRefreshInterval(value) {
+        const interval = Number(value);
+        this.signalRefreshIntervalMs = Number.isFinite(interval) ? interval : 0;
+        this.updateSignalRefreshStatus();
+        this.syncSignalAutoRefresh();
+    }
+
+    syncSignalAutoRefresh() {
+        this.stopSignalAutoRefresh();
+
+        const isMainTab = !app.tabManager || app.tabManager.currentTab === 'main';
+        const isVisible = document.visibilityState !== 'hidden';
+        if (!this.name || this.signalRefreshIntervalMs <= 0 || !isMainTab || !isVisible) {
+            this.updateSignalRefreshStatus();
+            return;
+        }
+
+        this.signalRefreshTimer = window.setInterval(() => {
+            this.getSignalStrength().catch(error => {
+                app.logger.error('自动刷新信号失败: ' + error);
+            });
+        }, this.signalRefreshIntervalMs);
+        this.updateSignalRefreshStatus();
+    }
+
+    stopSignalAutoRefresh() {
+        if (this.signalRefreshTimer) {
+            window.clearInterval(this.signalRefreshTimer);
+            this.signalRefreshTimer = null;
+        }
+    }
+
+    updateSignalRefreshStatus(refreshedAt = null) {
+        const status = $('#signalRefreshStatus');
+        if (!status) return;
+
+        if (this.signalRefreshIntervalMs <= 0) {
+            status.textContent = '自动刷新：关闭';
+            return;
+        }
+
+        if (document.visibilityState === 'hidden' || (app.tabManager && app.tabManager.currentTab !== 'main')) {
+            status.textContent = '自动刷新：暂停';
+            return;
+        }
+
+        const seconds = Math.round(this.signalRefreshIntervalMs / 1000);
+        const suffix = refreshedAt ? ` · ${refreshedAt.toLocaleTimeString()}` : '';
+        status.textContent = `自动刷新：${seconds} 秒${suffix}`;
     }
 
     /* =========================================
@@ -185,9 +362,18 @@ export class ModemManager {
      * 获取当前Modem中的短信列表
      */
     async listSms() {
+        if (!this.name) {
+            const container = $('#smsList');
+            if (container) {
+                container.innerHTML = '<div class="p-1">请选择串口设备</div>';
+            }
+            return;
+        }
+
         app.logger.info('正在读取短信列表 ...');
         const queryString = buildQueryString({ name: this.name });
-        const smsList = await apiRequest(`/modem/sms/list?${queryString}`);
+        const result = await apiRequest(`/modem/sms/list?${queryString}`);
+        const smsList = Array.isArray(result) ? result : [];
         app.logger.success(`已读取 ${smsList.length} 条短信`);
         // 渲染模板
         const container = $('#smsList');
@@ -203,6 +389,11 @@ export class ModemManager {
      * 通过选中的Modem发送短信
      */
     async sendSms() {
+        if (!this.name) {
+            app.logger.error('请先选择串口');
+            return;
+        }
+
         const number = $('#smsNumber').value.trim();
         const message = $('#smsMessage').value.trim();
         if (!number || !message) {

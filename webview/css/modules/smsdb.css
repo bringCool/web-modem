@@ -1,18 +1,35 @@
 /* =========================================
-   短信存储模块 (SMS Database Module)
+   SMS Database
    ========================================= */
 
-/* 短信存储表格特定样式 */
 .smsdb-table th,
 .smsdb-table td {
-    text-align: center;
     white-space: nowrap;
 }
 
-.smsdb-table th:nth-child(5),
-.smsdb-table td:nth-child(5) {
-    min-width: 200px;
-    max-width: 300px;
+.smsdb-table th:first-child,
+.smsdb-table td:first-child,
+.smsdb-table th:nth-child(2),
+.smsdb-table td:nth-child(2),
+.smsdb-table th:last-child,
+.smsdb-table td:last-child {
+    text-align: center;
+}
+
+.smsdb-table th:nth-child(6),
+.smsdb-table td:nth-child(6) {
+    min-width: 260px;
+    max-width: 420px;
     overflow: hidden;
+    text-align: left;
     text-overflow: ellipsis;
+}
+
+.smsdb-table td:nth-child(2) {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.smsdb-table td:last-child .btn + .btn {
+    margin-left: 6px;
 }

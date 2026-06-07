@@ -33,7 +33,12 @@ export const AT_COMMANDS = [
             { value: "AT+CNMP", text: "AT+CNMP - 查询/设置网络模式" },
             { value: "AT+CREG", text: "AT+CREG - 查询网络注册状态" },
             { value: "AT+CGREG", text: "AT+CGREG - 查询 GPRS 注册状态" },
-            { value: "AT+CSQ", text: "AT+CSQ - 查询信号质量" }
+            { value: "AT+CEREG?", text: "AT+CEREG? - 查询 LTE/EPS 注册状态" },
+            { value: "AT+CSQ", text: "AT+CSQ - 查询信号质量" },
+            { value: "AT+CESQ", text: "AT+CESQ - 查询扩展信号质量" },
+            { value: "AT+QCSQ", text: "AT+QCSQ - 查询 LTE 信号质量" },
+            { value: "AT+QENG=\"servingcell\"", text: "AT+QENG - 查询服务小区" },
+            { value: "AT+MUESTATS=\"radio\"", text: "AT+MUESTATS - 查询 ML307A 无线状态" }
         ]
     },
     {
