@@ -46,8 +46,18 @@ export function buildQueryString(params) {
 
     // 遍历参数对象，过滤空值并添加到查询字符串
     Object.keys(params).forEach(key => {
-        if (params[key] !== undefined && params[key] !== null && params[key] !== '') {
-            queryParams.append(key, params[key]);
+        const value = params[key];
+        if (Array.isArray(value)) {
+            value.forEach(item => {
+                if (item !== undefined && item !== null && item !== '') {
+                    queryParams.append(key, item);
+                }
+            });
+            return;
+        }
+
+        if (value !== undefined && value !== null && value !== '') {
+            queryParams.append(key, value);
         }
     });
 

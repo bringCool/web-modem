@@ -2,8 +2,10 @@ package handler
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rehiy/web-modem/database"
@@ -36,8 +38,36 @@ func (h *SmsdbHandler) ListSms(w http.ResponseWriter, r *http.Request) {
 		filter.SendNumber = sendNumber
 	}
 
+	if receiveNumber := r.URL.Query().Get("receive_number"); receiveNumber != "" {
+		filter.ReceiveNumber = receiveNumber
+	}
+
 	if modemName := r.URL.Query().Get("modem_name"); modemName != "" {
 		filter.ModemName = modemName
+	}
+
+	if deviceIMEI := r.URL.Query().Get("device_imei"); deviceIMEI != "" {
+		filter.DeviceIMEI = deviceIMEI
+	}
+
+	if simICCID := r.URL.Query().Get("sim_iccid"); simICCID != "" {
+		filter.SimICCID = simICCID
+	}
+
+	if simIMSI := r.URL.Query().Get("sim_imsi"); simIMSI != "" {
+		filter.SimIMSI = simIMSI
+	}
+
+	if operator := r.URL.Query().Get("operator"); operator != "" {
+		filter.Operator = operator
+	}
+
+	if deviceKeys := r.URL.Query()["device_key"]; len(deviceKeys) > 0 {
+		filter.DeviceKeys = append(filter.DeviceKeys, deviceKeys...)
+	}
+
+	if deviceKeys := r.URL.Query().Get("device_keys"); deviceKeys != "" {
+		filter.DeviceKeys = append(filter.DeviceKeys, strings.Split(deviceKeys, ",")...)
 	}
 
 	if startTime := r.URL.Query().Get("start_time"); startTime != "" {
@@ -107,26 +137,48 @@ func (h *SmsdbHandler) DeleteSmsBatch(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// SyncSms 从指定Modem同步短信到数据库
+// SyncSms 同步短信到数据库；未指定 name 时同步所有已连接Modem。
 func (h *SmsdbHandler) SyncSms(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name string `json:"name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
 		respondJSON(w, http.StatusBadRequest, H{"error": err.Error()})
 		return
 	}
 
-	if req.Name == "" {
-		respondJSON(w, http.StatusBadRequest, H{"error": "name is empty"})
+	modemName := strings.TrimSpace(req.Name)
+	if modemName == "" {
+		result, err := h.smsdbService.SyncAllSmsToDB()
+		if err != nil {
+			respondJSON(w, http.StatusInternalServerError, H{"error": err.Error()})
+			return
+		}
+
+		service.NewWebhookService().HandleDataEvent(service.WebhookEventSmsSyncCompleted, H{
+			"sync_scope":    "all",
+			"total_modems":  result.TotalModems,
+			"success_count": result.SuccessCount,
+			"failed_count":  result.FailedCount,
+			"total_count":   result.TotalCount,
+			"new_count":     result.NewCount,
+			"results":       result.Results,
+		})
+		respondJSON(w, http.StatusOK, result)
 		return
 	}
 
-	result, err := h.smsdbService.SyncSmsToDB(req.Name)
+	result, err := h.smsdbService.SyncSmsToDB(modemName)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, H{"error": err.Error()})
 		return
 	}
 
+	service.NewWebhookService().HandleDataEvent(service.WebhookEventSmsSyncCompleted, H{
+		"sync_scope":  "modem",
+		"modem_name":  result.ModemName,
+		"total_count": result.TotalCount,
+		"new_count":   result.NewCount,
+	})
 	respondJSON(w, http.StatusOK, result)
 }

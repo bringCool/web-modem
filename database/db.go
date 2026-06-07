@@ -77,6 +77,8 @@ func createTables() error {
 	err := db.AutoMigrate(
 		&models.Sms{},
 		&models.Webhook{},
+		&models.WebhookDelivery{},
+		&models.Alert{},
 		&models.Setting{},
 	)
 	if err != nil {

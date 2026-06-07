@@ -43,8 +43,11 @@ export class TabManager {
     async switchModem() {
         app.modemManager.name = $('#modemSelect').value;
         if (!app.modemManager.name) {
-            app.logger.error('请选择可用串口');
-            return null;
+            const requiresModem = ['main', 'sms', 'terminal'].includes(this.currentTab);
+            if (requiresModem) {
+                app.logger.error('请选择可用串口');
+                return null;
+            }
         }
 
         try {
@@ -61,20 +64,37 @@ export class TabManager {
     loadTabData() {
         switch (this.currentTab) {
             case 'sms':
+                app.modemManager.stopSignalAutoRefresh();
                 app.modemManager.listSms();
                 break;
             case 'smsdb':
+                app.modemManager.stopSignalAutoRefresh();
                 app.settingManager.loadSettings();
                 app.smsdbManager.listSmsdb();
                 break;
+            case 'terminal':
+                app.modemManager.stopSignalAutoRefresh();
+                break;
             case 'webhook':
+                app.modemManager.stopSignalAutoRefresh();
                 app.settingManager.loadSettings();
                 app.webhookManager.listWebhooks();
                 break;
+            case 'alert':
+                app.modemManager.stopSignalAutoRefresh();
+                app.alertManager.listAlerts();
+                break;
+            case 'update':
+                app.modemManager.stopSignalAutoRefresh();
+                app.updateManager.checkUpdate();
+                break;
             case 'main':
             default:
+                app.modemManager.renderCachedMainInfo();
                 app.modemManager.getModemInfo();
                 app.modemManager.getSignalStrength();
+                app.modemManager.syncSignalAutoRefresh();
+                app.smsdbManager.listRecentSmsdb();
                 break;
         }
     }

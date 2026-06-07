@@ -49,9 +49,33 @@ export class UIrender {
             const element = $(`#${elementId}`);
             if (element) {
                 this.templates[templateKey] = element.innerHTML || '';
-                element.innerHTML = '<small class="p-1">Loading ...</small>';
+                element.innerHTML = this.loadingMarkup(element, elementId);
             }
         }
+    }
+
+    loadingMarkup(element, elementId) {
+        const loading = '<div class="loading-state"><span class="loading-spinner"></span><span>加载中</span></div>';
+        if (elementId === 'modemInfo') {
+            return this.infoSkeleton(16);
+        }
+        if (elementId === 'signalInfo') {
+            return this.infoSkeleton(18);
+        }
+        if (element.tagName === 'TBODY') {
+            const colspan = elementId === 'webhookList' ? 7 : 8;
+            return `<tr><td colspan="${colspan}">${loading}</td></tr>`;
+        }
+        return loading;
+    }
+
+    infoSkeleton(count) {
+        return Array.from({ length: count }, () => `
+            <div class="info-item info-skeleton">
+                <span class="skeleton-line skeleton-label"></span>
+                <span class="skeleton-line skeleton-value"></span>
+            </div>
+        `).join('');
     }
 
     /**

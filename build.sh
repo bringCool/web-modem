@@ -2,12 +2,16 @@
 #
 
 set -e
-set -o noglob
+set -f
 
 ###########################################
 
 export CGO_ENABLED=0
 export GO111MODULE=on
+export GOPROXY=${GOPROXY:-https://mirrors.tencent.com/go/,https://proxy.golang.org,direct}
+
+UPDATE_REPO=${UPDATE_REPO:-}
+UPDATE_TOKEN=${UPDATE_TOKEN:-}
 
 build() {
     echo building for $1/$2
@@ -15,7 +19,17 @@ build() {
     if [ x"$1" = x"windows" ]; then
         target="${target}.exe"
     fi
-    GOOS=$1 GOARCH=$2 go build -ldflags="-s -w" -o $target main.go
+
+    ldflags="-s -w -X github.com/rehiy/web-modem/appinfo.Version=$last_tag"
+
+    if [ -n "$UPDATE_REPO" ]; then
+        ldflags="$ldflags -X github.com/rehiy/web-modem/appinfo.UpdateRepo=$UPDATE_REPO"
+    fi
+    if [ -n "$UPDATE_TOKEN" ]; then
+        ldflags="$ldflags -X github.com/rehiy/web-modem/appinfo.UpdateToken=$UPDATE_TOKEN"
+    fi
+
+    GOOS=$1 GOARCH=$2 go build -ldflags="$ldflags" -o $target main.go
 }
 
 ####################################################################
@@ -34,6 +48,9 @@ build linux amd64
 build linux arm64
 build linux ppc64le
 build linux s390x
+
+build darwin amd64
+build darwin arm64
 
 build windows amd64
 build windows arm64

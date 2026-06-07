@@ -6,7 +6,7 @@ export const PRESET_TEMPLATES = {
     generic: {
         name: "通用格式",
         template: {
-            event: "sms_received",
+            event: "{{event_type}}",
             data: {
                 content: "{{content}}",
                 send_number: "{{send_number}}",
