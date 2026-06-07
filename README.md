@@ -14,8 +14,8 @@
 - **设备管理**：自动扫描、多设备支持、实时状态监控、AT 指令调测
 - **短信功能**：PDU 模式收发、Unicode 编码、数据库存储、批量管理
 - **Webhook 通知**：实时推送、自定义模板、批量触发、重试机制
-- **数据可视化**：WebSocket 实时推送、分页筛选、设备信息展示
-- **高级功能**：数据同步、跨平台支持、Basic Auth 身份认证
+- **数据可视化**：SSE 实时推送、分页筛选、设备信息展示
+- **高级功能**：数据同步、自更新、跨平台支持、Basic Auth 身份认证
 
 ## 🚀 快速开始
 
@@ -106,7 +106,7 @@ POST /api/modem/sms/delete    # 删除短信
 ```http
 GET  /api/smsdb/list?direction=in&limit=50&offset=0 # 查询短信（支持分页）
 POST /api/smsdb/delete         # 批量删除
-POST /api/smsdb/sync           # 同步短信
+POST /api/smsdb/sync           # 同步短信；不传 name 时同步所有已连接卡
 ```
 
 ### Webhook API
@@ -128,10 +128,18 @@ PUT /api/settings/smsdb        # 更新短信存储设置
 PUT /api/settings/webhook      # 更新 Webhook 设置
 ```
 
-### WebSocket API
+### 自更新 API
 
 ```http
-WS /ws/modem                   # Modem 事件实时推送
+GET  /api/update/check         # 检查最新版本
+POST /api/update/apply         # 下载并应用更新
+POST /api/update/restart       # 重启应用
+```
+
+### SSE API
+
+```http
+GET /events/modem              # Modem 事件实时推送
 ```
 
 ## ⚠️ 注意事项
